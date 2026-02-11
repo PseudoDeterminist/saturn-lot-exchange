@@ -1,12 +1,25 @@
-# Saturn Lot Trading EVM Contract
+# Saturn Lot Trading EVM Contract - TEST VERSION
+
+```
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+/*
+  SaturnLotTrade v0.6.3 (Design / Testnet)
+  By PseudoDeterminist
+  See README at https://github.com/PseudoDeterminist/saturn-lot-trade for details.
+*/
+```
+
+This contract deployment on ETC is for TEST only. I'm reasonably certain if you put tokens in, you can get them out again safely. It is NOT designed for real trading at this time, and I have not and shall not trade on it. I just liked the idea of deploying on ETC for my own development purposes.
 
 This project demonstrates a basic Lot Trading token pair, intended for the Ethereum Classic blockchain. It's especially suited for ETC because it's meant to trade at the speed of proof of work: Slowly but at high value.
 
-In tests this contract uses generic mock tokens. On ETC mainnet it is configured for WETC (quote) and STRN10K (base lot token).
+In most tests this contract uses generic mock tokens. On ETC mainnet it is configured _for testing_ with WETC (price quote) and STRN10K (base lot token).
 
 STRN10K represents a 10,000-token Lot, meant to be a wrapper for the underlying asset at 10K STRN to exactly 1 (no decimals) STRN10K.
 
-WETC is the wrapped ETC quote asset used on ETC mainnet. In tests, a mock WETC is deployed.
+WETC is the wrapped ETC quote asset used on ETC mainnet. In other tests, a mock WETC is deployed.
 
 ## UI network toggle
 
@@ -29,10 +42,12 @@ Demo mode is now opt-in:
 
 ## Deployment links
 
-- ETC mainnet SaturnLotTrade: https://etc.blockscout.com/address/0x989445dA165F787Bb07B9C04946D87BbF9051EEf#code
+- ETC mainnet TEST SaturnLotTrade: https://etc.blockscout.com/address/0x989445dA165F787Bb07B9C04946D87BbF9051EEf#code
 - Mordor testnet SaturnLotTrade: https://etc-mordor.blockscout.com/address/0xf4B146FbA71F41E0592668ffbF264F1D186b2Ca8#code
 
 ## Token addresses (ETC mainnet)
+
+These tokens will accept original SATURN tokens and convert them to 1-1 same units (STRN) or 10,000-1 Lots (STRN10K) and back again. I'm reasonably certain if you put tokens in them, you can get them out again, but again these are for TESTING ONLY and I am done with them, and have left all balances ZERO at time of writing. That's by design. IGNORE tokens that are not supported by their original DAO. Or test away, that's all I have done.
 
 - STRN: `0xeEd7A7fB8659663C7be8EF6985e38c62cB616Ca6`
 - STRN10K: `0x7d35D3938c3b4446473a4ac29351Bd93694b5DEF`
@@ -40,7 +55,7 @@ Demo mode is now opt-in:
 
 This contract is NOT for small trades! It's designed to do high-value Lot Trading only. As such, its design is intended to entirely eliminate dust from trading, and to never waste block space on small trades that are perhaps best done on Layer 2 platforms.
 
-It is this author's belief that on-chain orderbook trading may never be the "right" way to trade; but if it can be, this contract is trying to implement the kind of model that could succeed.
+It is this author's belief that on-chain orderbook trading may never be the "right" way to trade; but if it can be, this contract is trying to implement one kind of model that could succeed.
 
 Trading is by its nature aggressive and adversarial. We don't want to eliminate these qualities from Layer 1, but if they're to be played out at high value on expensive proof-of-work blocks that are 15 seconds apart, then some important tradeoffs must be made. This contract represents one possible way to do it.
 
@@ -48,7 +63,7 @@ Prices available for traders to set in this contract are spaced out along an exp
 
 Why exponential? So that movements up or down this curve will always represent a nearly constant percentage (approximately 1/2 %) of the current price.
 
-![Price tick curve showing exponential distribution from 1000 to 99500](tools/assets/PriceCurve.png)
+![Price tick curve showing exponential price distribution from 1000 to 99500](tools/assets/PriceCurve.png)
 
 The above curve is only a visual aid for users to see that the solidity number blocks that represent prices do actually generate an approximately smooth curve. The priceTicks were plotted using matlab in Python.
 
@@ -92,4 +107,6 @@ The ticks are designed to have only four significant decimal digits at all scale
 This aids both in human readability and in eliminating dust-level "precision" in trying to fit prices exactly to the curve. We sacrifice that exactness for these benefits, and yet the curve still looks smooth at scale, as the plot shows.
 
 Traders don't get into petty price-difference wars between ticks, because those prices are unavailable by design. This means if a trader wants to set the new "best trade" they must be willing to lower the best price or raise the highest bid by a full half percent!
+
+For this particular trading pair, TEST price range has been set so that lowest cost 10K Lot is .1 ETC, and highest cost is somewhere beyond reasonable. Lowest cost at .1 ETC is intended to disable use of this style of contract for easily spammed low values. If the real price is lower this is not an appropriate venue for trading the asset.
 
