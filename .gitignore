@@ -20,6 +20,7 @@ artifacts/
 cache/
 out/
 .env
+gas-optimization-notes.md
 .DS_Store
 
 # core-geth files

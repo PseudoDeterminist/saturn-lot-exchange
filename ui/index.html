@@ -167,6 +167,19 @@
             <button class="btn ghost mini" id="add-wetc">Add WETC</button>
             <button class="btn ghost mini" id="add-strn10k">Add STRN10K</button>
           </div>
+          <div class="taker-controls">
+            <label class="field">
+              <span>Limit Tick</span>
+              <input id="taker-limit-input" type="number" step="1" placeholder="e.g. 121" />
+            </label>
+            <label class="field">
+              <span>Max WETC / Min WETC</span>
+              <input id="taker-value-input" type="text" placeholder="e.g. 1.5" />
+            </label>
+            <div class="ticket-actions">
+              <button class="btn outline" id="take-btn">Take FOK</button>
+            </div>
+          </div>
           <div class="ticket-foot" id="ticket-status">Connect a wallet to trade.</div>
         </div>
       </section>

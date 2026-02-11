@@ -17,11 +17,17 @@ const ABI = [
   "function getOracle() view returns (int256 bestBuyTick,int256 bestSellTick,int256 lastTradeTick,uint256 lastTradeBlock,uint256 lastTradePrice)",
   "function getTopOfBook() view returns (int256 bestBuyTick,uint256 buyLots,uint256 buyOrders,int256 bestSellTick,uint256 sellLots,uint256 sellOrders)",
   "function getEscrowTotals() view returns (uint256 buyWETC,uint256 sellSTRN10K)",
+  "function historyHash() view returns (bytes32)",
   "function priceAtTick(int256 tick) view returns (uint256)",
   "function cancel(uint64 id)",
   "function placeBuy(int256 tick,uint256 lots) returns (uint64)",
-  "function placeSell(int256 tick,uint256 lots) returns (uint64)"
+  "function placeSell(int256 tick,uint256 lots) returns (uint64)",
+  "function buyFOK(int256 limitTick,uint256 lots,uint256 maxWetcIn) returns (uint256)",
+  "function buyFOK(int256 limitTick,uint256 lots,uint256 maxWetcIn,bytes32 expectedHash) returns (uint256)",
+  "function sellFOK(int256 limitTick,uint256 lots,uint256 minWetcOut) returns (uint256)",
+  "function sellFOK(int256 limitTick,uint256 lots,uint256 minWetcOut,bytes32 expectedHash) returns (uint256)"
 ];
+
 
 const ERC20_ABI = [
   "function approve(address spender,uint256 amount) returns (bool)",
@@ -69,7 +75,10 @@ const el = {
   placeBtn: document.getElementById("place-btn"),
   addWetc: document.getElementById("add-wetc"),
   addStrn10k: document.getElementById("add-strn10k"),
-  ticketStatus: document.getElementById("ticket-status")
+  ticketStatus: document.getElementById("ticket-status"),
+  takerLimitInput: document.getElementById("taker-limit-input"),
+  takerValueInput: document.getElementById("taker-value-input"),
+  takeBtn: document.getElementById("take-btn")
 };
 
 const state = {
@@ -94,6 +103,110 @@ function toNumber(value) {
   if (typeof value === "bigint") return Number(value);
   if (value && typeof value.toNumber === "function") return value.toNumber();
   return Number(value);
+}
+
+async function getLatestHistoryHash() {
+  if (!state.readContract) return null;
+  try {
+    if (state.writeContract) {
+      // prefer wallet provider so the hash reflects pending local state if any
+      return await state.writeContract.historyHash();
+    }
+    return await state.readContract.historyHash();
+  } catch (err) {
+    console.warn("historyHash lookup failed:", err);
+    return null;
+  }
+}
+
+async function takeOrder() {
+  if (!state.writeContract || !state.signer) {
+    setTicketStatus("Connect a wallet to take orders.");
+    return;
+  }
+
+  const limit = Number(el.takerLimitInput.value);
+  const lots = Number(el.lotsInput.value);
+  const valueStr = (el.takerValueInput.value || "").trim();
+  if (!Number.isFinite(limit) || !Number.isFinite(lots) || lots <= 0) {
+    setTicketStatus("Enter a valid limit tick and lots.");
+    return;
+  }
+
+  setTicketStatus("Preparing take...\n");
+
+  try {
+    const owner = await state.signer.getAddress();
+
+    const expectedHash = await getLatestHistoryHash();
+
+    if (state.side === "buy") {
+      // taker buys: must approve WETC to contract
+      if (!state.wetc) {
+        setTicketStatus("WETC address missing.");
+        return;
+      }
+      const wetc = state.wetc.connect(state.signer);
+      const maxWetcIn = valueStr ? ethers.parseUnits(valueStr, 18) : 0n;
+      const allowance = await wetc.allowance(owner, CONTRACT_ADDRESS);
+      if (allowance < maxWetcIn) {
+        setTicketStatus("Approving WETC...");
+        const tx = await wetc.approve(CONTRACT_ADDRESS, ethers.MaxUint256);
+        await tx.wait();
+      }
+      setTicketStatus("Submitting buyFOK...");
+      // Use interface to disambiguate overloads and encode the exact call
+      const iface = new ethers.Interface(ABI);
+      let calldata;
+      if (expectedHash) {
+        calldata = iface.encodeFunctionData("buyFOK(int256,uint256,uint256,bytes32)", [limit, lots, maxWetcIn, expectedHash]);
+      } else {
+        calldata = iface.encodeFunctionData("buyFOK(int256,uint256,uint256)", [limit, lots, maxWetcIn]);
+      }
+      const tx = await state.signer.sendTransaction({
+        to: CONTRACT_ADDRESS,
+        data: calldata,
+        gasLimit: 8000000
+      });
+      await tx.wait();
+      setTicketStatus("buyFOK executed.");
+    } else {
+      // taker sells: must approve STRN10K to contract
+      if (!state.strn10k) {
+        setTicketStatus("STRN10K address missing.");
+        return;
+      }
+      const strn = state.strn10k.connect(state.signer);
+      const lotsBig = BigInt(lots);
+      const allowance = await strn.allowance(owner, CONTRACT_ADDRESS);
+      if (allowance < lotsBig) {
+        setTicketStatus("Approving STRN10K...");
+        const tx = await strn.approve(CONTRACT_ADDRESS, ethers.MaxUint256);
+        await tx.wait();
+      }
+      const minWetcOut = valueStr ? ethers.parseUnits(valueStr, 18) : 0n;
+      setTicketStatus("Submitting sellFOK...");
+      // Use interface to disambiguate overloads and encode the exact call
+      const iface = new ethers.Interface(ABI);
+      let calldata;
+      if (expectedHash) {
+        calldata = iface.encodeFunctionData("sellFOK(int256,uint256,uint256,bytes32)", [limit, lots, minWetcOut, expectedHash]);
+      } else {
+        calldata = iface.encodeFunctionData("sellFOK(int256,uint256,uint256)", [limit, lots, minWetcOut]);
+      }
+      const tx = await state.signer.sendTransaction({
+        to: CONTRACT_ADDRESS,
+        data: calldata,
+        gasLimit: 8000000
+      });
+      await tx.wait();
+      setTicketStatus("sellFOK executed.");
+    }
+
+    await refresh();
+  } catch (err) {
+    setTicketStatus(`Take failed: ${err.message || err}`);
+  }
 }
 
 function formatWetc(value, digits = 4) {
@@ -733,6 +846,7 @@ function bindEvents() {
   el.refreshBtn.addEventListener("click", refresh);
   el.previewBtn.addEventListener("click", previewOrder);
   el.placeBtn.addEventListener("click", placeOrder);
+  if (el.takeBtn) el.takeBtn.addEventListener("click", takeOrder);
   el.depthInput.addEventListener("change", () => {
     const value = Number(el.depthInput.value);
     if (Number.isFinite(value)) {
