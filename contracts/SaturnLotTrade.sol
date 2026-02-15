@@ -481,8 +481,7 @@ contract SaturnLotTrade {
                 // Contract delivers WETC to maker (seller) after state updates
                 WETC.safeTransfer(maker, pay);
 
-                // Contract releases escrowed STRN10K to taker (buyer) after state updates
-                STRN10K.safeTransfer(msg.sender, uint256(fill));
+                // Taker receipts are consolidated and paid after all fills
 
                 (seq, chain) = _emitTrade(
                     seq,
@@ -525,6 +524,9 @@ contract SaturnLotTrade {
         lastTradeBlock = block.number;
         lastTradeTick = t;
         lastTradePrice = price;
+
+        // Pay taker their STRN10K receipts after all fills
+        STRN10K.safeTransfer(msg.sender, lots);
 
         // Refund any unspent WETC to taker
         if (spent < maxWetcIn) {
@@ -605,9 +607,8 @@ contract SaturnLotTrade {
                 // Contract delivers STRN10K to maker (buyer) after state updates
                 STRN10K.safeTransfer(maker, uint256(fill));
 
-                // Contract releases escrowed WETC to taker (seller) after state updates
-                WETC.safeTransfer(msg.sender, receiveAmt);
-                
+                // Taker receipts are consolidated and paid after all fills
+
                 (seq, chain) = _emitTrade(
                     seq,
                     chain,
@@ -650,6 +651,9 @@ contract SaturnLotTrade {
         lastTradeTick = t;
         lastTradePrice = price;
         lastTradeBlock = block.number;
+
+        // Pay taker their WETC receipts after all fills
+        WETC.safeTransfer(msg.sender, got);
 
     }
 
