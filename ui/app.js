@@ -1,7 +1,7 @@
 /* global ethers */
 const config = window.APP_CONFIG || {};
 
-const RPC_URL = config.rpcUrl || "http://127.0.0.1:8545";
+const API_BASE = "/api";
 const CONTRACT_ADDRESS = config.simpleLotTradeAddress || "";
 const WETC_ADDRESS = config.wetcAddress || "";
 const STRN10K_ADDRESS = config.strn10kAddress || "";
@@ -37,7 +37,7 @@ const ERC20_ABI = [
   "function symbol() view returns (string)"
 ];
 
-const NONE = -(2n ** 255n);
+const NONE = -(2n ** 31n);
 
 const el = {
   statusPill: document.getElementById("status-pill"),
@@ -82,11 +82,10 @@ const el = {
 };
 
 const state = {
-  readProvider: null,
   walletProvider: null,
   signer: null,
   walletAddress: null,
-  readContract: null,
+  walletReadContract: null,
   writeContract: null,
   wetc: null,
   strn10k: null,
@@ -95,7 +94,6 @@ const state = {
   lastTradeTick: null,
   lastTradeBlock: null,
   tape: [],
-  readSource: "rpc",
   readChainId: null
 };
 
@@ -105,14 +103,36 @@ function toNumber(value) {
   return Number(value);
 }
 
-async function getLatestHistoryHash() {
-  if (!state.readContract) return null;
+async function fetchApi(path) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store"
+  });
+  let body;
   try {
-    if (state.writeContract) {
-      // prefer wallet provider so the hash reflects pending local state if any
-      return await state.writeContract.historyHash();
-    }
-    return await state.readContract.historyHash();
+    body = await response.json();
+  } catch (_) {
+    throw new Error("API returned an invalid response");
+  }
+  if (!response.ok) throw new Error(body.error || `API request failed (${response.status})`);
+  return body;
+}
+
+async function getMarketSnapshot(depth, orders) {
+  const params = new URLSearchParams({ depth: String(depth), orders: String(orders) });
+  return fetchApi(`/market?${params}`);
+}
+
+async function getPriceAtTick(tick) {
+  const result = await fetchApi(`/price?tick=${encodeURIComponent(String(tick))}`);
+  return BigInt(result.price);
+}
+
+async function getLatestHistoryHash() {
+  if (!state.writeContract) return null;
+  try {
+    // Keep transaction-concurrency reads on the wallet provider.
+    return await state.writeContract.historyHash();
   } catch (err) {
     console.warn("historyHash lookup failed:", err);
     return null;
@@ -288,16 +308,6 @@ function errorMessage(err) {
   return err.shortMessage || err.message || String(err);
 }
 
-async function safeCall(name, fn) {
-  try {
-    const value = await fn();
-    return { ok: true, name, value };
-  } catch (err) {
-    console.warn(`RPC ${name} failed:`, err);
-    return { ok: false, name, error: err };
-  }
-}
-
 function renderDemo() {
   const buy = buildDemoBook("buy");
   const sell = buildDemoBook("sell");
@@ -326,7 +336,9 @@ async function addTokenToWallet(address, fallbackSymbol, fallbackDecimals) {
         ? state.wetc
         : address.toLowerCase() === STRN10K_ADDRESS.toLowerCase()
           ? state.strn10k
-          : new ethers.Contract(address, ERC20_ABI, state.readProvider);
+          : state.walletProvider
+            ? new ethers.Contract(address, ERC20_ABI, state.walletProvider)
+            : null;
     if (token) {
       const [sym, dec] = await Promise.all([token.symbol(), token.decimals()]);
       symbol = sym || symbol;
@@ -371,23 +383,9 @@ async function copyAddresses() {
 }
 
 async function initProvider() {
-  state.readProvider = new ethers.JsonRpcProvider(RPC_URL);
   if (window.ethereum) {
     state.walletProvider = new ethers.BrowserProvider(window.ethereum);
   }
-  state.readContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, state.readProvider);
-  if (WETC_ADDRESS) state.wetc = new ethers.Contract(WETC_ADDRESS, ERC20_ABI, state.readProvider);
-  if (STRN10K_ADDRESS) state.strn10k = new ethers.Contract(STRN10K_ADDRESS, ERC20_ABI, state.readProvider);
-  state.readSource = "rpc";
-}
-
-function useWalletForReads() {
-  if (!state.walletProvider) return false;
-  state.readContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, state.walletProvider);
-  if (WETC_ADDRESS) state.wetc = new ethers.Contract(WETC_ADDRESS, ERC20_ABI, state.walletProvider);
-  if (STRN10K_ADDRESS) state.strn10k = new ethers.Contract(STRN10K_ADDRESS, ERC20_ABI, state.walletProvider);
-  state.readSource = "wallet";
-  return true;
 }
 
 async function connectWallet() {
@@ -401,7 +399,10 @@ async function connectWallet() {
     }
     await window.ethereum.request({ method: "eth_requestAccounts" });
     state.signer = await state.walletProvider.getSigner();
-    state.writeContract = state.readContract.connect(state.signer);
+    state.walletReadContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, state.walletProvider);
+    state.writeContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, state.signer);
+    if (WETC_ADDRESS) state.wetc = new ethers.Contract(WETC_ADDRESS, ERC20_ABI, state.walletProvider);
+    if (STRN10K_ADDRESS) state.strn10k = new ethers.Contract(STRN10K_ADDRESS, ERC20_ABI, state.walletProvider);
     state.walletAddress = (await state.signer.getAddress()).toLowerCase();
     el.connectBtn.textContent = shortAddr(state.walletAddress);
     el.placeBtn.disabled = false;
@@ -577,46 +578,29 @@ function buildDemoOrders(isSell = false) {
 }
 
 async function refresh() {
-  if (!state.readContract) return;
   const depth = Number(el.depthInput.value) || MAX_LEVELS_DEFAULT;
   const maxOrders = MAX_ORDERS_DEFAULT;
 
   try {
-    const [buyRes, sellRes, oracleRes, escrowRes] = await Promise.all([
-      safeCall("getBuyBook", () => state.readContract.getBuyBook(depth)),
-      safeCall("getSellBook", () => state.readContract.getSellBook(depth)),
-      safeCall("getOracle", () => state.readContract.getOracle()),
-      safeCall("getEscrowTotals", () => state.readContract.getEscrowTotals())
-    ]);
-
-    if (!buyRes.ok || !sellRes.ok || !oracleRes.ok || !escrowRes.ok) {
-      const firstErr = [buyRes, sellRes, oracleRes, escrowRes].find((res) => !res.ok);
-      setDemoMode(`${firstErr.name}: ${errorMessage(firstErr.error)}`);
-      return;
-    }
-
-    const [buyBook, buyN] = buyRes.value;
-    const [sellBook, sellN] = sellRes.value;
-    const oracle = oracleRes.value;
-    const escrow = escrowRes.value;
-
-    const [buyOrdersRes, sellOrdersRes] = await Promise.all([
-      safeCall("getBuyOrders", () => state.readContract.getBuyOrders(maxOrders)),
-      safeCall("getSellOrders", () => state.readContract.getSellOrders(maxOrders))
-    ]);
-
-    const buyLevels = Array.from(buyBook).slice(0, toNumber(buyN));
-    const sellLevels = Array.from(sellBook).slice(0, toNumber(sellN));
-    const buyOrdersList = buyOrdersRes.ok
-      ? Array.from(buyOrdersRes.value[0]).slice(0, toNumber(buyOrdersRes.value[1]))
-      : [];
-    const sellOrdersList = sellOrdersRes.ok
-      ? Array.from(sellOrdersRes.value[0]).slice(0, toNumber(sellOrdersRes.value[1]))
-      : [];
+    const snapshot = await getMarketSnapshot(depth, maxOrders);
+    const toLevel = (level) => ({
+      ...level,
+      tick: BigInt(level.tick), price: BigInt(level.price), totalLots: BigInt(level.totalLots),
+      totalValue: BigInt(level.totalValue), orderCount: BigInt(level.orderCount)
+    });
+    const toOrder = (order) => ({
+      ...order,
+      id: BigInt(order.id), tick: BigInt(order.tick), price: BigInt(order.price),
+      lotsRemaining: BigInt(order.lotsRemaining), valueRemaining: BigInt(order.valueRemaining)
+    });
+    const buyLevels = snapshot.buyBook.levels.map(toLevel);
+    const sellLevels = snapshot.sellBook.levels.map(toLevel);
+    const buyOrdersList = snapshot.buyOrders.orders.map(toOrder);
+    const sellOrdersList = snapshot.sellOrders.orders.map(toOrder);
 
     setStatus("Live", true);
     el.emptyBanner.hidden = !(buyLevels.length === 0 && sellLevels.length === 0);
-    const sourceLabel = state.readSource === "rpc" ? "RPC" : "Wallet";
+    const sourceLabel = "API";
     const chainLabel = state.readChainId ? ` chain ${state.readChainId}` : "";
     el.chainStatus.textContent = `${sourceLabel}${chainLabel}`;
     renderBook(el.buyBook, buyLevels, "buy");
@@ -625,13 +609,19 @@ async function refresh() {
     renderOrders(buyOrdersList, sellOrdersList);
     updateChart(buyLevels, sellLevels);
 
-    const [bestBuyTick, bestSellTick, lastTradeTick, lastTradeBlock, lastTradePrice] = oracle;
+    const { oracle } = snapshot;
+    const bestBuyTick = BigInt(oracle.bestBuyTick);
+    const bestSellTick = BigInt(oracle.bestSellTick);
+    const lastTradeTick = BigInt(oracle.lastTradeTick);
+    const lastTradeBlock = BigInt(oracle.lastTradeBlock);
+    const lastTradePrice = BigInt(oracle.lastTradePrice);
     el.bestBid.textContent = bestBuyTick === NONE ? "--" : `${formatTick(bestBuyTick)} @ ${formatWetc(buyLevels[0]?.price || 0n)}`;
     el.bestAsk.textContent = bestSellTick === NONE ? "--" : `${formatTick(bestSellTick)} @ ${formatWetc(sellLevels[0]?.price || 0n)}`;
     el.lastTrade.textContent = `${formatTick(lastTradeTick)} @ ${formatWetc(lastTradePrice)}`;
     el.lastBlock.textContent = lastTradeBlock.toString();
 
-    const [buyWETC, sellSTRN10K] = escrow;
+    const buyWETC = BigInt(snapshot.escrow.buyWETC);
+    const sellSTRN10K = BigInt(snapshot.escrow.sellSTRN10K);
     el.escrowTotals.textContent = `${formatWetc(buyWETC)} WETC / ${formatLots(sellSTRN10K)} lots`;
     const totalLots = [...buyLevels, ...sellLevels].reduce(
       (acc, lvl) => acc + BigInt(lvl.totalLots),
@@ -658,10 +648,7 @@ async function refresh() {
     state.lastTradeBlock = lastTradeBlock;
     renderTape();
 
-    const ordersNote = !buyOrdersRes.ok || !sellOrdersRes.ok
-      ? " (orders unavailable)"
-      : "";
-    el.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}${ordersNote}`;
+    el.lastUpdate.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
   } catch (err) {
     setDemoMode(errorMessage(err));
   }
@@ -675,7 +662,7 @@ async function previewOrder() {
     return;
   }
   try {
-    const price = await state.readContract.priceAtTick(tick);
+    const price = await getPriceAtTick(tick);
     const total = price * BigInt(lots);
     el.previewPrice.textContent = `${formatWetc(price)} WETC`;
     el.previewValue.textContent = `${formatWetc(total)} WETC`;
@@ -733,8 +720,8 @@ async function clearMyOrders() {
   try {
     setTicketStatus("Canceling your orders...");
     const [buyRes, sellRes] = await Promise.all([
-      state.readContract.getBuyOrders(MAX_ORDERS_DEFAULT),
-      state.readContract.getSellOrders(MAX_ORDERS_DEFAULT)
+      state.walletReadContract.getBuyOrders(MAX_ORDERS_DEFAULT),
+      state.walletReadContract.getSellOrders(MAX_ORDERS_DEFAULT)
     ]);
     const [buyOrders, buyN] = buyRes;
     const [sellOrders, sellN] = sellRes;
@@ -766,8 +753,8 @@ async function seedOrders() {
   }
   try {
     const [buyRes, sellRes] = await Promise.all([
-      state.readContract.getBuyBook(1),
-      state.readContract.getSellBook(1)
+      state.walletReadContract.getBuyBook(1),
+      state.walletReadContract.getSellBook(1)
     ]);
     if (toNumber(buyRes[1]) > 0 || toNumber(sellRes[1]) > 0) {
       setTicketStatus("Book already has orders.");
@@ -796,7 +783,7 @@ async function seedOrders() {
 
     let neededWetc = 0n;
     for (const order of buySeeds) {
-      const price = await state.readContract.priceAtTick(order.tick);
+      const price = await state.walletReadContract.priceAtTick(order.tick);
       neededWetc += price * BigInt(order.lots);
     }
     const neededStrn10k = sellSeeds.reduce((acc, order) => acc + BigInt(order.lots), 0n);
@@ -892,22 +879,11 @@ async function boot() {
   el.clearBtn.disabled = true;
   try {
     await initProvider();
-    const network = await state.readProvider.getNetwork();
-    state.readChainId = Number(network.chainId);
+    const health = await fetchApi("/health");
+    state.readChainId = Number(health.chainId);
   } catch (err) {
-    if (state.walletProvider) {
-      try {
-        const network = await state.walletProvider.getNetwork();
-        state.readChainId = Number(network.chainId);
-        useWalletForReads();
-      } catch (walletErr) {
-        setDemoMode(walletErr.message || err.message || "No provider");
-        return;
-      }
-    } else {
-      setDemoMode(err.message || "No provider");
-      return;
-    }
+    setDemoMode(err.message || "Read API unavailable");
+    return;
   }
   await refresh();
   setInterval(refresh, 3000);
